@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
-import { Card, Modal, Input, Button, EmptyState } from '../../src/components';
+import { Card, Modal, Input, Button, EmptyState, DatePicker } from '../../src/components';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { getSavingsGoals, insertSavingsGoal, updateSavingsGoal, deleteSavingsGoal } from '../../src/db/queries';
 import { SavingsGoal } from '../../src/types';
@@ -13,16 +13,19 @@ import { format } from 'date-fns';
 export default function SavingsScreen() {
   const db = useDatabase();
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
-  const [showModal, setShowModal] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showFundsModal, setShowFundsModal] = useState(false);
+  const [selectedGoal, setSelectedGoal] = useState<SavingsGoal | null>(null);
   const [name, setName] = useState('');
   const [target, setTarget] = useState('');
   const [targetDate, setTargetDate] = useState(format(new Date(Date.now() + 90 * 86400000), 'yyyy-MM-dd'));
+  const [fundsAmount, setFundsAmount] = useState('');
 
   const load = async () => setGoals(await getSavingsGoals(db));
 
   useEffect(() => { load(); }, [db]);
 
-  const handleAdd = async () => {
+  const handleCreate = async () => {
     const t = parseFloat(target);
     if (!name || isNaN(t) || t <= 0) return;
     await insertSavingsGoal(db, {
@@ -32,16 +35,41 @@ export default function SavingsScreen() {
       current_amount: 0,
       target_date: targetDate,
     });
-    setShowModal(false);
+    setShowCreateModal(false);
     setName('');
     setTarget('');
     load();
   };
 
-  const handleAddFunds = async (goal: SavingsGoal) => {
-    // Alert.prompt is iOS only; for cross-platform, use a simple increment
-    const increment = goal.target_amount * 0.1; // Add 10% of target as default
-    await updateSavingsGoal(db, { ...goal, current_amount: goal.current_amount + increment });
+  const openAddFunds = (goal: SavingsGoal) => {
+    setSelectedGoal(goal);
+    setFundsAmount('');
+    setShowFundsModal(true);
+  };
+
+  const handleAddFunds = async () => {
+    if (!selectedGoal) return;
+    const amt = parseFloat(fundsAmount);
+    if (isNaN(amt) || amt <= 0) return;
+    await updateSavingsGoal(db, {
+      ...selectedGoal,
+      current_amount: Math.min(selectedGoal.current_amount + amt, selectedGoal.target_amount),
+    });
+    setShowFundsModal(false);
+    setSelectedGoal(null);
+    load();
+  };
+
+  const handleWithdraw = async () => {
+    if (!selectedGoal) return;
+    const amt = parseFloat(fundsAmount);
+    if (isNaN(amt) || amt <= 0) return;
+    await updateSavingsGoal(db, {
+      ...selectedGoal,
+      current_amount: Math.max(selectedGoal.current_amount - amt, 0),
+    });
+    setShowFundsModal(false);
+    setSelectedGoal(null);
     load();
   };
 
@@ -60,25 +88,44 @@ export default function SavingsScreen() {
         contentContainerStyle={styles.list}
         renderItem={({ item }) => {
           const pct = item.target_amount > 0 ? item.current_amount / item.target_amount : 0;
+          const isComplete = pct >= 1;
           return (
             <Card variant="elevated" style={styles.card}>
               <View style={styles.header}>
-                <View>
-                  <Text style={styles.goalName}>{item.name}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.goalName}>
+                    {isComplete ? '  ' : ''}{item.name}
+                  </Text>
                   <Text style={styles.goalDate}>Target: {item.target_date}</Text>
                 </View>
-                <TouchableOpacity onPress={() => handleDelete(item.id)}>
-                  <MaterialIcons name="delete-outline" size={20} color={colors.textTertiary} />
-                </TouchableOpacity>
+                <View style={styles.headerActions}>
+                  <TouchableOpacity onPress={() => openAddFunds(item)} style={styles.actionBtn}>
+                    <MaterialIcons name="add-circle-outline" size={22} color={colors.primary} />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleDelete(item.id)} style={styles.actionBtn}>
+                    <MaterialIcons name="delete-outline" size={20} color={colors.textTertiary} />
+                  </TouchableOpacity>
+                </View>
               </View>
               <View style={styles.amountRow}>
                 <Text style={styles.current}>{formatCurrency(item.current_amount)}</Text>
-                <Text style={styles.target}>/ {formatCurrency(item.target_amount)}</Text>
+                <Text style={styles.targetText}>/ {formatCurrency(item.target_amount)}</Text>
               </View>
               <View style={styles.progressBg}>
-                <View style={[styles.progressFill, { width: `${Math.min(pct * 100, 100)}%` }]} />
+                <View
+                  style={[
+                    styles.progressFill,
+                    {
+                      width: `${Math.min(pct * 100, 100)}%`,
+                      backgroundColor: isComplete ? colors.income : colors.primary,
+                    },
+                  ]}
+                />
               </View>
-              <Text style={styles.pct}>{Math.round(pct * 100)}% saved</Text>
+              <View style={styles.bottomRow}>
+                <Text style={styles.pct}>{Math.round(pct * 100)}% saved</Text>
+                {isComplete && <Text style={styles.completeText}>Goal reached!</Text>}
+              </View>
             </Card>
           );
         }}
@@ -88,16 +135,17 @@ export default function SavingsScreen() {
             title="No Savings Goals"
             message="Set goals to track your savings progress."
             actionLabel="Add Goal"
-            onAction={() => setShowModal(true)}
+            onAction={() => setShowCreateModal(true)}
           />
         }
       />
 
-      <TouchableOpacity style={styles.fab} onPress={() => setShowModal(true)}>
+      <TouchableOpacity style={styles.fab} onPress={() => setShowCreateModal(true)}>
         <MaterialIcons name="add" size={28} color="#fff" />
       </TouchableOpacity>
 
-      <Modal visible={showModal} onClose={() => setShowModal(false)} title="New Savings Goal">
+      {/* Create Goal Modal */}
+      <Modal visible={showCreateModal} onClose={() => setShowCreateModal(false)} title="New Savings Goal">
         <Input label="Goal Name" value={name} onChangeText={setName} placeholder="e.g. Emergency Fund" />
         <Input
           label="Target Amount"
@@ -107,14 +155,46 @@ export default function SavingsScreen() {
           placeholder="e.g. 10000"
           containerStyle={{ marginTop: spacing.md }}
         />
+        <View style={{ marginTop: spacing.md }}>
+          <DatePicker label="Target Date" value={targetDate} onChange={setTargetDate} />
+        </View>
+        <Button title="Create Goal" onPress={handleCreate} disabled={!name || !target} style={{ marginTop: spacing.lg }} />
+      </Modal>
+
+      {/* Add/Withdraw Funds Modal */}
+      <Modal
+        visible={showFundsModal}
+        onClose={() => setShowFundsModal(false)}
+        title={selectedGoal ? `Update: ${selectedGoal.name}` : 'Update Savings'}
+      >
+        {selectedGoal && (
+          <Text style={styles.fundsInfo}>
+            Current: {formatCurrency(selectedGoal.current_amount)} / {formatCurrency(selectedGoal.target_amount)}
+          </Text>
+        )}
         <Input
-          label="Target Date"
-          value={targetDate}
-          onChangeText={setTargetDate}
-          placeholder="YYYY-MM-DD"
-          containerStyle={{ marginTop: spacing.md }}
+          label="Amount"
+          value={fundsAmount}
+          onChangeText={setFundsAmount}
+          keyboardType="numeric"
+          placeholder="Enter amount"
+          containerStyle={{ marginTop: spacing.sm }}
         />
-        <Button title="Create Goal" onPress={handleAdd} disabled={!name || !target} style={{ marginTop: spacing.lg }} />
+        <View style={styles.fundsActions}>
+          <Button
+            title="Add Funds"
+            onPress={handleAddFunds}
+            disabled={!fundsAmount}
+            style={{ flex: 1 }}
+          />
+          <Button
+            title="Withdraw"
+            onPress={handleWithdraw}
+            disabled={!fundsAmount}
+            variant="outline"
+            style={{ flex: 1 }}
+          />
+        </View>
       </Modal>
     </View>
   );
@@ -125,14 +205,20 @@ const styles = StyleSheet.create({
   list: { padding: spacing.md, paddingBottom: 100 },
   card: { marginBottom: spacing.sm },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  headerActions: { flexDirection: 'row', gap: spacing.xs },
+  actionBtn: { padding: 4 },
   goalName: { ...typography.bodyBold, color: colors.text },
   goalDate: { ...typography.small, color: colors.textTertiary, marginTop: 2 },
   amountRow: { flexDirection: 'row', alignItems: 'baseline', gap: 4, marginTop: spacing.sm },
   current: { ...typography.h3, color: colors.primary },
-  target: { ...typography.caption, color: colors.textSecondary },
+  targetText: { ...typography.caption, color: colors.textSecondary },
   progressBg: { height: 8, borderRadius: 4, backgroundColor: colors.borderLight, marginTop: spacing.sm },
-  progressFill: { height: '100%', borderRadius: 4, backgroundColor: colors.primary },
-  pct: { ...typography.small, color: colors.textSecondary, marginTop: spacing.xs, textAlign: 'right' },
+  progressFill: { height: '100%', borderRadius: 4 },
+  bottomRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: spacing.xs },
+  pct: { ...typography.small, color: colors.textSecondary },
+  completeText: { ...typography.smallBold, color: colors.income },
+  fundsInfo: { ...typography.caption, color: colors.textSecondary, marginBottom: spacing.sm },
+  fundsActions: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
   fab: {
     position: 'absolute',
     right: spacing.lg,

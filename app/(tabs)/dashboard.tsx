@@ -1,15 +1,14 @@
-import React, { useEffect, useCallback } from 'react';
-import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Dimensions } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, ScrollView, StyleSheet, TouchableOpacity, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
-import { Card } from '../../src/components';
+import { Card, MonthSelector, DashboardSkeleton } from '../../src/components';
+import { SpendingChart } from '../../src/components/SpendingChart';
 import { useTransactionStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
-import { formatCurrency } from '../../src/utils/formatting';
+import { formatCurrency, getCurrentMonth } from '../../src/utils/formatting';
 import { getCategoryById } from '../../src/utils/categories';
-
-const { width } = Dimensions.get('window');
 
 export default function DashboardScreen() {
   const db = useDatabase();
@@ -19,20 +18,45 @@ export default function DashboardScreen() {
     monthlyExpenses,
     categoryTotals,
     transactions,
+    loading,
+    currentMonth,
+    setMonth,
     loadTransactions,
   } = useTransactionStore();
+  const [refreshing, setRefreshing] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
       loadTransactions(db);
-    }, [db])
+    }, [db, currentMonth])
   );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadTransactions(db);
+    setRefreshing(false);
+  };
+
+  const handleMonthChange = (month: string) => {
+    setMonth(month);
+    loadTransactions(db);
+  };
 
   const savings = monthlyIncome - monthlyExpenses;
   const savingsRate = monthlyIncome > 0 ? savings / monthlyIncome : 0;
 
+  if (loading && transactions.length === 0) {
+    return <DashboardSkeleton />;
+  }
+
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+    >
+      <MonthSelector month={currentMonth} onChange={handleMonthChange} />
+
       {/* Summary Cards */}
       <View style={styles.summaryRow}>
         <Card variant="elevated" style={{ ...styles.summaryCard, backgroundColor: colors.primary }}>
@@ -60,35 +84,13 @@ export default function DashboardScreen() {
         </Text>
       </Card>
 
-      {/* Spending Breakdown */}
+      {/* Spending Chart */}
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionTitle}>Spending Breakdown</Text>
       </View>
       {categoryTotals.length > 0 ? (
-        <Card variant="elevated" style={styles.breakdownCard}>
-          {categoryTotals.slice(0, 6).map((item) => {
-            const cat = getCategoryById(item.category);
-            const pct = monthlyExpenses > 0 ? item.total / monthlyExpenses : 0;
-            return (
-              <View key={item.category} style={styles.categoryRow}>
-                <View style={[styles.categoryIcon, { backgroundColor: cat.color + '20' }]}>
-                  <MaterialIcons name={cat.icon as any} size={18} color={cat.color} />
-                </View>
-                <View style={styles.categoryInfo}>
-                  <Text style={styles.categoryName}>{cat.name}</Text>
-                  <View style={styles.progressBar}>
-                    <View
-                      style={[
-                        styles.progressFill,
-                        { width: `${Math.min(pct * 100, 100)}%`, backgroundColor: cat.color },
-                      ]}
-                    />
-                  </View>
-                </View>
-                <Text style={styles.categoryAmount}>{formatCurrency(item.total)}</Text>
-              </View>
-            );
-          })}
+        <Card variant="elevated">
+          <SpendingChart categoryTotals={categoryTotals} totalExpenses={monthlyExpenses} />
         </Card>
       ) : (
         <Card variant="elevated" style={styles.emptyCard}>
@@ -110,29 +112,30 @@ export default function DashboardScreen() {
       {transactions.slice(0, 5).map((t) => {
         const cat = getCategoryById(t.category);
         return (
-          <Card key={t.id} style={styles.transactionItem}>
-            <View style={styles.transactionRow}>
-              <View style={[styles.categoryIcon, { backgroundColor: cat.color + '20' }]}>
-                <MaterialIcons name={cat.icon as any} size={18} color={cat.color} />
+          <TouchableOpacity key={t.id} onPress={() => router.push(`/transaction/${t.id}`)}>
+            <Card style={styles.transactionItem}>
+              <View style={styles.transactionRow}>
+                <View style={[styles.categoryIcon, { backgroundColor: cat.color + '20' }]}>
+                  <MaterialIcons name={cat.icon as any} size={18} color={cat.color} />
+                </View>
+                <View style={styles.transactionInfo}>
+                  <Text style={styles.transactionDesc}>{t.description || cat.name}</Text>
+                  <Text style={styles.transactionDate}>{t.date}</Text>
+                </View>
+                <Text
+                  style={[
+                    styles.transactionAmount,
+                    { color: t.type === 'income' ? colors.income : colors.expense },
+                  ]}
+                >
+                  {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                </Text>
               </View>
-              <View style={styles.transactionInfo}>
-                <Text style={styles.transactionDesc}>{t.description || cat.name}</Text>
-                <Text style={styles.transactionDate}>{t.date}</Text>
-              </View>
-              <Text
-                style={[
-                  styles.transactionAmount,
-                  { color: t.type === 'income' ? colors.income : colors.expense },
-                ]}
-              >
-                {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
-              </Text>
-            </View>
-          </Card>
+            </Card>
+          </TouchableOpacity>
         );
       })}
 
-      {/* FAB spacer */}
       <View style={{ height: 80 }} />
     </ScrollView>
   );
@@ -159,8 +162,6 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { ...typography.h4, color: colors.text },
   seeAll: { ...typography.captionBold, color: colors.primary },
-  breakdownCard: { gap: spacing.md },
-  categoryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   categoryIcon: {
     width: 36,
     height: 36,
@@ -168,16 +169,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  categoryInfo: { flex: 1 },
-  categoryName: { ...typography.caption, color: colors.text },
-  progressBar: {
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: colors.borderLight,
-    marginTop: 4,
-  },
-  progressFill: { height: '100%', borderRadius: 2 },
-  categoryAmount: { ...typography.captionBold, color: colors.text },
   emptyCard: { alignItems: 'center', padding: spacing.xl, gap: spacing.sm },
   emptyText: { ...typography.body, color: colors.textSecondary },
   emptyAction: { ...typography.captionBold, color: colors.primary },

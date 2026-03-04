@@ -10,7 +10,7 @@ import {
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
-import { Input, Button } from '../../src/components';
+import { Input, Button, DatePicker } from '../../src/components';
 import { useTransactionStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { TransactionType } from '../../src/types';
@@ -114,13 +114,9 @@ export default function AddTransactionScreen() {
       />
 
       {/* Date */}
-      <Input
-        label="Date"
-        value={date}
-        onChangeText={setDate}
-        placeholder="YYYY-MM-DD"
-        containerStyle={styles.field}
-      />
+      <View style={styles.field}>
+        <DatePicker label="Date" value={date} onChange={setDate} />
+      </View>
 
       {/* Recurring Toggle */}
       <View style={styles.switchRow}>

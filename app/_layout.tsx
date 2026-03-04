@@ -1,9 +1,15 @@
+import { useEffect } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { DatabaseProvider } from '../src/db/DatabaseProvider';
+import { initAuth } from '../src/services/auth';
 import { colors } from '../src/theme';
 
 export default function RootLayout() {
+  useEffect(() => {
+    initAuth();
+  }, []);
+
   return (
     <DatabaseProvider>
       <StatusBar style="dark" />

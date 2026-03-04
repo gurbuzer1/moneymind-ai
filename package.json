@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
+    "@react-native-community/datetimepicker": "8.6.0",
     "@types/uuid": "^11.0.0",
     "axios": "^1.13.6",
     "date-fns": "^4.1.0",
@@ -29,6 +30,7 @@
     "react-native-screens": "~4.23.0",
     "react-native-svg": "15.15.3",
     "uuid": "^13.0.0",
+    "victory-native": "^41.20.2",
     "zod": "^4.3.6",
     "zustand": "^5.0.11"
   },

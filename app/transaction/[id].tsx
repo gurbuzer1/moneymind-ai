@@ -3,7 +3,7 @@ import { View, Text, ScrollView, StyleSheet, TouchableOpacity, Switch, Alert } f
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
-import { Input, Button } from '../../src/components';
+import { Input, Button, DatePicker } from '../../src/components';
 import { useTransactionStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { TransactionType } from '../../src/types';
@@ -112,7 +112,9 @@ export default function EditTransactionScreen() {
       </View>
 
       <Input label="Description" value={description} onChangeText={setDescription} containerStyle={styles.field} />
-      <Input label="Date" value={date} onChangeText={setDate} containerStyle={styles.field} />
+      <View style={styles.field}>
+        <DatePicker label="Date" value={date} onChange={setDate} />
+      </View>
 
       <View style={styles.switchRow}>
         <Text style={styles.switchLabel}>Recurring</Text>

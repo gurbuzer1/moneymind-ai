@@ -1,36 +1,51 @@
-import React, { useCallback } from 'react';
-import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert } from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { View, Text, FlatList, StyleSheet, TouchableOpacity, Alert, RefreshControl } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors, typography, spacing, borderRadius } from '../../src/theme';
-import { Card, EmptyState } from '../../src/components';
+import { Card, EmptyState, MonthSelector, TransactionListSkeleton } from '../../src/components';
 import { useTransactionStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { formatCurrency, formatDate } from '../../src/utils/formatting';
-import { getCategoryById } from '../../src/utils/categories';
+import { getCategoryById, categories } from '../../src/utils/categories';
 import { Transaction } from '../../src/types';
 
 export default function TransactionsScreen() {
   const db = useDatabase();
   const router = useRouter();
-  const { transactions, loadTransactions, deleteTransaction } = useTransactionStore();
+  const { transactions, loading, currentMonth, setMonth, loadTransactions, deleteTransaction } = useTransactionStore();
+  const [refreshing, setRefreshing] = useState(false);
+  const [filterCategory, setFilterCategory] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       loadTransactions(db);
-    }, [db])
+    }, [db, currentMonth])
   );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadTransactions(db);
+    setRefreshing(false);
+  };
+
+  const handleMonthChange = (month: string) => {
+    setMonth(month);
+    loadTransactions(db);
+  };
 
   const handleDelete = (id: string) => {
     Alert.alert('Delete Transaction', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => deleteTransaction(db, id),
-      },
+      { text: 'Delete', style: 'destructive', onPress: () => deleteTransaction(db, id) },
     ]);
   };
+
+  const filtered = filterCategory
+    ? transactions.filter((t) => t.category === filterCategory)
+    : transactions;
+
+  const activeCategories = [...new Set(transactions.map((t) => t.category))];
 
   const renderItem = ({ item }: { item: Transaction }) => {
     const cat = getCategoryById(item.category);
@@ -50,10 +65,7 @@ export default function TransactionsScreen() {
             </View>
             <View style={styles.amountCol}>
               <Text
-                style={[
-                  styles.amount,
-                  { color: item.type === 'income' ? colors.income : colors.expense },
-                ]}
+                style={[styles.amount, { color: item.type === 'income' ? colors.income : colors.expense }]}
               >
                 {item.type === 'income' ? '+' : '-'}{formatCurrency(item.amount)}
               </Text>
@@ -65,23 +77,65 @@ export default function TransactionsScreen() {
     );
   };
 
+  if (loading && transactions.length === 0) {
+    return <TransactionListSkeleton />;
+  }
+
   return (
     <View style={styles.container}>
+      <MonthSelector month={currentMonth} onChange={handleMonthChange} />
+
+      {/* Category Filter Chips */}
+      {activeCategories.length > 1 && (
+        <FlatList
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          data={activeCategories}
+          keyExtractor={(item) => item}
+          contentContainerStyle={styles.filterRow}
+          renderItem={({ item: catId }) => {
+            const cat = getCategoryById(catId);
+            const isActive = filterCategory === catId;
+            return (
+              <TouchableOpacity
+                style={[styles.filterChip, isActive && { backgroundColor: cat.color, borderColor: cat.color }]}
+                onPress={() => setFilterCategory(isActive ? null : catId)}
+              >
+                <MaterialIcons name={cat.icon as any} size={14} color={isActive ? '#fff' : cat.color} />
+                <Text style={[styles.filterText, isActive && { color: '#fff' }]}>{cat.name}</Text>
+              </TouchableOpacity>
+            );
+          }}
+        />
+      )}
+
       <FlatList
-        data={transactions}
+        data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
         ListEmptyComponent={
-          <EmptyState
-            icon="receipt-long"
-            title="No Transactions"
-            message="Start tracking your spending by adding a transaction."
-            actionLabel="Add Transaction"
-            onAction={() => router.push('/transaction/add')}
-          />
+          filterCategory ? (
+            <EmptyState
+              icon="filter-list"
+              title="No Matching Transactions"
+              message="Try a different category filter."
+              actionLabel="Clear Filter"
+              onAction={() => setFilterCategory(null)}
+            />
+          ) : (
+            <EmptyState
+              icon="receipt-long"
+              title="No Transactions"
+              message="Start tracking your spending by adding a transaction."
+              actionLabel="Add Transaction"
+              onAction={() => router.push('/transaction/add')}
+            />
+          )
         }
       />
+
       <TouchableOpacity
         style={styles.fab}
         onPress={() => router.push('/transaction/add')}
@@ -96,6 +150,20 @@ export default function TransactionsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   list: { padding: spacing.md, paddingBottom: 100 },
+  filterRow: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm, gap: spacing.xs },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: borderRadius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.surface,
+    marginRight: spacing.xs,
+  },
+  filterText: { ...typography.small, color: colors.text },
   item: { marginBottom: spacing.sm },
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   icon: {

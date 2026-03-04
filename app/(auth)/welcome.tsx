@@ -37,6 +37,11 @@ export default function WelcomeScreen() {
       <View style={styles.actions}>
         <Button title="Get Started" onPress={() => router.push('/(auth)/setup-income')} size="lg" />
         <Button
+          title="Sign In"
+          variant="outline"
+          onPress={() => router.push('/(auth)/sign-in')}
+        />
+        <Button
           title="I'll set up later"
           variant="ghost"
           onPress={() => router.replace('/(tabs)/dashboard')}

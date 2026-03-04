@@ -7,6 +7,7 @@ import { Card, Input, Button, Modal } from '../../src/components';
 import { useUserStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { formatCurrency } from '../../src/utils/formatting';
+import { logout } from '../../src/services/auth';
 
 export default function ProfileScreen() {
   const db = useDatabase();
@@ -43,6 +44,21 @@ export default function ProfileScreen() {
     { icon: 'savings' as const, label: 'Savings Goals', onPress: () => router.push('/savings') },
     { icon: 'star' as const, label: 'Upgrade to Premium', onPress: () => router.push('/subscription') },
     { icon: 'info' as const, label: 'About', onPress: () => Alert.alert('MoneyMind AI', 'Version 1.0.0\nAI-powered personal finance') },
+    {
+      icon: 'logout' as const,
+      label: 'Sign Out',
+      onPress: () => Alert.alert('Sign Out', 'Are you sure?', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            await logout();
+            router.replace('/(auth)/welcome');
+          },
+        },
+      ]),
+    },
   ];
 
   return (
