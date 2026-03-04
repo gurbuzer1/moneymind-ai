@@ -1,6 +1,21 @@
+import React from 'react';
+import { Pressable, GestureResponderEvent } from 'react-native';
 import { Tabs } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import { colors } from '../../src/theme';
+import { hapticSelection } from '../../src/utils/haptics';
+
+function HapticTab(props: { onPress?: (e: GestureResponderEvent) => void; [key: string]: any }) {
+  return (
+    <Pressable
+      {...props}
+      onPress={(e) => {
+        hapticSelection();
+        props.onPress?.(e);
+      }}
+    />
+  );
+}
 
 export default function TabLayout() {
   return (
@@ -18,6 +33,7 @@ export default function TabLayout() {
         headerStyle: { backgroundColor: colors.surface },
         headerTintColor: colors.text,
         headerShadowVisible: false,
+        tabBarButton: HapticTab,
       }}
     >
       <Tabs.Screen

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import Database from 'better-sqlite3';
 import bcrypt from 'bcryptjs';
-import { v4 as uuid } from 'uuid';
+import crypto from 'crypto';
 import { generateToken } from '../middleware/auth';
 import path from 'path';
 
@@ -34,7 +34,7 @@ authRoutes.post('/register', async (req: Request, res: Response) => {
       return;
     }
 
-    const id = uuid();
+    const id = crypto.randomUUID();
     const passwordHash = await bcrypt.hash(password, 10);
     db.prepare(
       'INSERT INTO users (id, email, password_hash, display_name) VALUES (?, ?, ?, ?)'

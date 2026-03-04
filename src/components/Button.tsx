@@ -8,6 +8,7 @@ import {
   TextStyle,
 } from 'react-native';
 import { colors, typography, spacing, borderRadius } from '../theme';
+import { hapticLight } from '../utils/haptics';
 
 interface ButtonProps {
   title: string;
@@ -36,7 +37,7 @@ export const Button: React.FC<ButtonProps> = ({
 
   return (
     <TouchableOpacity
-      onPress={onPress}
+      onPress={() => { hapticLight(); onPress(); }}
       disabled={isDisabled}
       style={[
         styles.base,

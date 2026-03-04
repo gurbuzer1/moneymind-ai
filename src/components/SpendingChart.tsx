@@ -1,7 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { PolarChart, Pie } from 'victory-native';
 import { MaterialIcons } from '@expo/vector-icons';
-import { colors, typography, spacing, borderRadius } from '../theme';
+import { colors, typography, spacing } from '../theme';
 import { getCategoryById } from '../utils/categories';
 import { formatCurrency } from '../utils/formatting';
 
@@ -16,32 +17,32 @@ export const SpendingChart: React.FC<SpendingChartProps> = ({
 }) => {
   if (categoryTotals.length === 0) return null;
 
-  // Build pie segments as a ring chart using conic gradient simulation
-  // Since react-native-svg conic gradients are complex, use a stacked bar approach
   const segments = categoryTotals.slice(0, 8);
-  let accumulated = 0;
+
+  const pieData = segments.map((item) => ({
+    value: item.total,
+    color: getCategoryById(item.category).color,
+    label: item.category,
+  }));
 
   return (
     <View style={styles.container}>
-      {/* Horizontal stacked bar */}
-      <View style={styles.barContainer}>
-        {segments.map((item) => {
-          const pct = totalExpenses > 0 ? (item.total / totalExpenses) * 100 : 0;
-          const cat = getCategoryById(item.category);
-          accumulated += pct;
-          return (
-            <View
-              key={item.category}
-              style={[
-                styles.barSegment,
-                {
-                  width: `${Math.max(pct, 2)}%`,
-                  backgroundColor: cat.color,
-                },
-              ]}
-            />
-          );
-        })}
+      {/* Pie Chart */}
+      <View style={styles.chartWrapper}>
+        <PolarChart
+          data={pieData}
+          colorKey="color"
+          valueKey="value"
+          labelKey="label"
+        >
+          <Pie.Chart innerRadius="55%">
+            {() => <Pie.Slice />}
+          </Pie.Chart>
+        </PolarChart>
+        <View style={styles.chartCenter}>
+          <Text style={styles.centerAmount}>{formatCurrency(totalExpenses)}</Text>
+          <Text style={styles.centerLabel}>Total Spent</Text>
+        </View>
       </View>
 
       {/* Legend */}
@@ -71,15 +72,22 @@ export const SpendingChart: React.FC<SpendingChartProps> = ({
 
 const styles = StyleSheet.create({
   container: { gap: spacing.md },
-  barContainer: {
-    flexDirection: 'row',
-    height: 16,
-    borderRadius: 8,
-    overflow: 'hidden',
-    backgroundColor: colors.borderLight,
+  chartWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 220,
   },
-  barSegment: {
-    height: '100%',
+  chartCenter: {
+    position: 'absolute',
+    alignItems: 'center',
+  },
+  centerAmount: {
+    ...typography.h4,
+    color: colors.text,
+  },
+  centerLabel: {
+    ...typography.small,
+    color: colors.textSecondary,
   },
   legend: {
     gap: spacing.sm,

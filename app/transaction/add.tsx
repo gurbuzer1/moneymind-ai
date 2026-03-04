@@ -16,6 +16,7 @@ import { useDatabase } from '../../src/db/DatabaseProvider';
 import { TransactionType } from '../../src/types';
 import { expenseCategories, incomeCategories } from '../../src/utils/categories';
 import { format } from 'date-fns';
+import { hapticSuccess, hapticSelection } from '../../src/utils/haptics';
 
 export default function AddTransactionScreen() {
   const db = useDatabase();
@@ -44,6 +45,7 @@ export default function AddTransactionScreen() {
       date,
       is_recurring: isRecurring,
     });
+    hapticSuccess();
     router.back();
   };
 
@@ -53,7 +55,7 @@ export default function AddTransactionScreen() {
       <View style={styles.typeToggle}>
         <TouchableOpacity
           style={[styles.typeBtn, type === 'expense' && styles.typeBtnActive]}
-          onPress={() => { setType('expense'); setCategory(''); }}
+          onPress={() => { hapticSelection(); setType('expense'); setCategory(''); }}
         >
           <MaterialIcons
             name="arrow-upward"
@@ -66,7 +68,7 @@ export default function AddTransactionScreen() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.typeBtn, type === 'income' && styles.incomeActive]}
-          onPress={() => { setType('income'); setCategory(''); }}
+          onPress={() => { hapticSelection(); setType('income'); setCategory(''); }}
         >
           <MaterialIcons
             name="arrow-downward"
@@ -96,7 +98,7 @@ export default function AddTransactionScreen() {
           <TouchableOpacity
             key={c.id}
             style={[styles.catItem, category === c.id && { borderColor: c.color, backgroundColor: c.color + '15' }]}
-            onPress={() => setCategory(c.id)}
+            onPress={() => { hapticSelection(); setCategory(c.id); }}
           >
             <MaterialIcons name={c.icon as any} size={22} color={c.color} />
             <Text style={styles.catLabel} numberOfLines={1}>{c.name}</Text>

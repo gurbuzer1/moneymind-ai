@@ -8,6 +8,7 @@ import { useUserStore } from '../../src/stores';
 import { useDatabase } from '../../src/db/DatabaseProvider';
 import { formatCurrency } from '../../src/utils/formatting';
 import { logout } from '../../src/services/auth';
+import { exportTransactionsCSV } from '../../src/services/export';
 
 export default function ProfileScreen() {
   const db = useDatabase();
@@ -42,6 +43,17 @@ export default function ProfileScreen() {
 
   const menuItems = [
     { icon: 'savings' as const, label: 'Savings Goals', onPress: () => router.push('/savings') },
+    {
+      icon: 'file-download' as const,
+      label: 'Export Transactions',
+      onPress: async () => {
+        try {
+          await exportTransactionsCSV(db);
+        } catch (e: any) {
+          Alert.alert('Export', e.message || 'Failed to export');
+        }
+      },
+    },
     { icon: 'star' as const, label: 'Upgrade to Premium', onPress: () => router.push('/subscription') },
     { icon: 'info' as const, label: 'About', onPress: () => Alert.alert('MoneyMind AI', 'Version 1.0.0\nAI-powered personal finance') },
     {
