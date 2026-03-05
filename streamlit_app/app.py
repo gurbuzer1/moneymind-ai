@@ -113,6 +113,41 @@ def init_db():
             monthly_income REAL NOT NULL DEFAULT 0,
             subscription_tier TEXT NOT NULL DEFAULT 'free'
         );
+        CREATE TABLE IF NOT EXISTS recurring_bills (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            amount REAL NOT NULL,
+            category TEXT NOT NULL DEFAULT 'bills',
+            frequency TEXT NOT NULL DEFAULT 'monthly' CHECK(frequency IN ('weekly','biweekly','monthly','quarterly','yearly')),
+            due_day INTEGER NOT NULL DEFAULT 1,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            type TEXT NOT NULL CHECK(type IN ('asset','liability')),
+            balance REAL NOT NULL DEFAULT 0,
+            icon TEXT NOT NULL DEFAULT '🏦',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS net_worth_snapshots (
+            id TEXT PRIMARY KEY,
+            date TEXT NOT NULL,
+            total_assets REAL NOT NULL DEFAULT 0,
+            total_liabilities REAL NOT NULL DEFAULT 0,
+            net_worth REAL NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS debts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            total_amount REAL NOT NULL,
+            remaining_amount REAL NOT NULL,
+            interest_rate REAL NOT NULL DEFAULT 0,
+            min_payment REAL NOT NULL DEFAULT 0,
+            due_day INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
     # Ensure default profile
     existing = conn.execute("SELECT id FROM user_profile LIMIT 1").fetchone()
@@ -229,10 +264,15 @@ with st.sidebar:
     st.markdown("## 💰 MoneyMind AI")
     st.markdown("---")
 
+    NAV_PAGES = [
+        "Dashboard", "Transactions", "AI Chat", "Budget", "Savings",
+        "Recurring Bills", "Cash Flow", "Net Worth", "Insights", "Debt Payoff",
+        "Profile",
+    ]
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Transactions", "AI Chat", "Budget", "Savings", "Profile"],
-        index=["Dashboard", "Transactions", "AI Chat", "Budget", "Savings", "Profile"].index(st.session_state.page),
+        NAV_PAGES,
+        index=NAV_PAGES.index(st.session_state.page) if st.session_state.page in NAV_PAGES else 0,
         label_visibility="collapsed",
     )
     st.session_state.page = page
@@ -257,7 +297,7 @@ with st.sidebar:
                 st.rerun()
 
     st.markdown("---")
-    st.caption("v1.0.0 • AI-Powered Finance")
+    st.caption("v2.0.0 • AI-Powered Finance")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1011,6 +1051,843 @@ elif page == "Savings":
             st.divider()
     else:
         st.info("No savings goals yet. Click '➕ New Savings Goal' to get started.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# RECURRING BILLS
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Recurring Bills":
+    st.title("🔄 Recurring Bills & Subscriptions")
+
+    # Add bill
+    with st.expander("➕ Add Recurring Bill", expanded=False):
+        with st.form("add_bill", clear_on_submit=True):
+            bill_name = st.text_input("Name", placeholder="e.g. Netflix, Rent, Electricity")
+            bc1, bc2, bc3 = st.columns(3)
+            with bc1:
+                bill_amount = st.number_input("Amount", min_value=0.01, step=1.0, format="%.2f", key="bill_amt")
+            with bc2:
+                bill_freq = st.selectbox("Frequency", ["monthly", "weekly", "biweekly", "quarterly", "yearly"])
+            with bc3:
+                bill_due = st.number_input("Due Day", min_value=1, max_value=31, value=1, key="bill_due")
+
+            bill_cat_opts = {f"{v['icon']} {v['name']}": k for k, v in EXPENSE_CATEGORIES.items()}
+            bill_cat_sel = st.selectbox("Category", list(bill_cat_opts.keys()), key="bill_cat")
+            bill_category = bill_cat_opts[bill_cat_sel]
+
+            if st.form_submit_button("Add Bill", type="primary"):
+                if bill_name:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO recurring_bills (id,name,amount,category,frequency,due_day) VALUES (?,?,?,?,?,?)",
+                        [str(uuid.uuid4()), bill_name, bill_amount, bill_category, bill_freq, bill_due],
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Bill added!")
+                    st.rerun()
+
+    conn = get_db()
+    bills = conn.execute("SELECT * FROM recurring_bills WHERE is_active=1 ORDER BY due_day ASC").fetchall()
+    conn.close()
+
+    if bills:
+        # Monthly cost summary
+        total_monthly = 0
+        for b in bills:
+            amt = b["amount"]
+            freq = b["frequency"]
+            if freq == "weekly":
+                total_monthly += amt * 4.33
+            elif freq == "biweekly":
+                total_monthly += amt * 2.17
+            elif freq == "monthly":
+                total_monthly += amt
+            elif freq == "quarterly":
+                total_monthly += amt / 3
+            elif freq == "yearly":
+                total_monthly += amt / 12
+
+        total_yearly = total_monthly * 12
+
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Active Bills", f"{len(bills)}")
+        mc2.metric("Monthly Cost", format_currency(total_monthly))
+        mc3.metric("Yearly Cost", format_currency(total_yearly))
+
+        st.markdown("---")
+
+        # Calendar view — show bills for current month
+        st.subheader("📅 This Month's Calendar")
+        month_str = st.session_state.current_month
+        month_date_obj = datetime.strptime(month_str + "-01", "%Y-%m-%d").date()
+
+        import calendar
+        cal = calendar.Calendar(firstweekday=6)
+        month_days = cal.monthdayscalendar(month_date_obj.year, month_date_obj.month)
+
+        # Build bill due dates map
+        bill_due_map = {}
+        for b in bills:
+            freq = b["frequency"]
+            if freq in ["monthly", "quarterly", "yearly"]:
+                day = min(b["due_day"], calendar.monthrange(month_date_obj.year, month_date_obj.month)[1])
+                if freq == "quarterly" and month_date_obj.month % 3 != 0:
+                    continue
+                if freq == "yearly" and month_date_obj.month != 1:
+                    continue
+                bill_due_map.setdefault(day, []).append(b)
+            elif freq == "weekly":
+                for week in month_days:
+                    for d in week:
+                        if d != 0 and datetime(month_date_obj.year, month_date_obj.month, d).weekday() == (b["due_day"] - 1) % 7:
+                            bill_due_map.setdefault(d, []).append(b)
+            elif freq == "biweekly":
+                for week_idx, week in enumerate(month_days):
+                    if week_idx % 2 == 0:
+                        for d in week:
+                            if d != 0 and datetime(month_date_obj.year, month_date_obj.month, d).weekday() == (b["due_day"] - 1) % 7:
+                                bill_due_map.setdefault(d, []).append(b)
+
+        # Render calendar grid
+        cal_cols = st.columns(7)
+        for i, day_name in enumerate(["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]):
+            cal_cols[i].markdown(f"**{day_name}**")
+
+        for week in month_days:
+            cols = st.columns(7)
+            for i, day in enumerate(week):
+                with cols[i]:
+                    if day == 0:
+                        st.markdown("&nbsp;", unsafe_allow_html=True)
+                    else:
+                        day_bills = bill_due_map.get(day, [])
+                        if day_bills:
+                            bill_names = ", ".join([b["name"] for b in day_bills])
+                            bill_total = sum(b["amount"] for b in day_bills)
+                            st.markdown(
+                                f"<div style='background:#FEE2E2;border-radius:8px;padding:4px;text-align:center'>"
+                                f"<b>{day}</b><br>"
+                                f"<small style='color:#EF4444'>${bill_total:.0f}</small>"
+                                f"</div>",
+                                unsafe_allow_html=True,
+                            )
+                        elif day == date.today().day and month_str == date.today().strftime("%Y-%m"):
+                            st.markdown(
+                                f"<div style='background:#6C63FF;color:white;border-radius:8px;padding:4px;text-align:center'>"
+                                f"<b>{day}</b></div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            st.markdown(f"<div style='text-align:center;padding:4px'>{day}</div>", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # Bill list
+        st.subheader("All Recurring Bills")
+        for b in bills:
+            icon = cat_icon(b["category"])
+            freq_label = {"weekly": "/wk", "biweekly": "/2wk", "monthly": "/mo", "quarterly": "/qtr", "yearly": "/yr"}
+            bc1, bc2, bc3, bc4 = st.columns([0.5, 3, 2, 0.5])
+            with bc1:
+                st.markdown(f"<span style='font-size:24px'>{icon}</span>", unsafe_allow_html=True)
+            with bc2:
+                st.markdown(f"**{b['name']}**<br><small style='color:#9CA3AF'>Due day {b['due_day']} • {b['frequency'].title()}</small>", unsafe_allow_html=True)
+            with bc3:
+                st.markdown(f"<span style='color:#FF6B6B;font-weight:700;font-size:18px'>{format_currency(b['amount'])}{freq_label[b['frequency']]}</span>", unsafe_allow_html=True)
+            with bc4:
+                if st.button("🗑️", key=f"del_bill_{b['id']}"):
+                    conn = get_db()
+                    conn.execute("DELETE FROM recurring_bills WHERE id=?", [b["id"]])
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+            st.divider()
+
+        # Subscription detection from transactions
+        st.markdown("---")
+        st.subheader("🔍 Detected Subscriptions")
+        st.caption("Auto-detected from your recurring transactions")
+        conn = get_db()
+        detected = pd.read_sql_query(
+            """SELECT description, amount, COUNT(*) as count
+            FROM transactions WHERE is_recurring=1 AND type='expense' AND description != ''
+            GROUP BY description, amount HAVING count >= 2
+            ORDER BY amount DESC""",
+            conn,
+        )
+        conn.close()
+        if not detected.empty:
+            for _, d in detected.iterrows():
+                st.markdown(f"💡 **{d['description']}** — {format_currency(d['amount'])} × {d['count']} times")
+        else:
+            st.info("No recurring patterns detected yet. Mark transactions as recurring to enable detection.")
+    else:
+        st.info("No recurring bills yet. Click '➕ Add Recurring Bill' to start tracking.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CASH FLOW FORECAST
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Cash Flow":
+    st.title("📈 Cash Flow Forecast")
+
+    # Gather data
+    conn = get_db()
+    profile = dict(conn.execute("SELECT * FROM user_profile LIMIT 1").fetchone())
+    bills = conn.execute("SELECT * FROM recurring_bills WHERE is_active=1").fetchall()
+
+    # Get last 6 months of transaction data for averages
+    six_months_ago = (date.today() - timedelta(days=180)).strftime("%Y-%m-%d")
+    hist_df = pd.read_sql_query(
+        "SELECT type, amount, date FROM transactions WHERE date >= ? ORDER BY date",
+        conn, params=[six_months_ago],
+    )
+    conn.close()
+
+    # Calculate monthly averages
+    if not hist_df.empty:
+        hist_df["month"] = hist_df["date"].str[:7]
+        monthly_hist = hist_df.groupby(["month", "type"])["amount"].sum().reset_index()
+        monthly_pivot = monthly_hist.pivot(index="month", columns="type", values="amount").fillna(0)
+        avg_income = monthly_pivot.get("income", pd.Series([0])).mean()
+        avg_expense = monthly_pivot.get("expense", pd.Series([0])).mean()
+    else:
+        avg_income = profile.get("monthly_income", 0)
+        avg_expense = 0
+
+    # Calculate recurring bills monthly total
+    bills_monthly = 0
+    for b in bills:
+        amt = b["amount"]
+        freq = b["frequency"]
+        if freq == "weekly":
+            bills_monthly += amt * 4.33
+        elif freq == "biweekly":
+            bills_monthly += amt * 2.17
+        elif freq == "monthly":
+            bills_monthly += amt
+        elif freq == "quarterly":
+            bills_monthly += amt / 3
+        elif freq == "yearly":
+            bills_monthly += amt / 12
+
+    # User overrides
+    st.markdown("### Forecast Parameters")
+    fp1, fp2, fp3 = st.columns(3)
+    with fp1:
+        forecast_income = st.number_input("Expected Monthly Income", value=round(avg_income, 2), min_value=0.0, step=100.0, format="%.2f")
+    with fp2:
+        forecast_expense = st.number_input("Expected Monthly Expenses", value=round(avg_expense, 2), min_value=0.0, step=100.0, format="%.2f")
+    with fp3:
+        forecast_months = st.slider("Forecast Period (months)", min_value=1, max_value=24, value=6)
+
+    starting_balance = st.number_input("Current Balance", value=0.0, step=100.0, format="%.2f", key="cf_balance")
+
+    # Generate forecast
+    forecast_dates = []
+    forecast_balances = []
+    forecast_income_series = []
+    forecast_expense_series = []
+    balance = starting_balance
+
+    today = date.today()
+    for i in range(forecast_months):
+        m = today.month + i
+        y = today.year + (m - 1) // 12
+        m = ((m - 1) % 12) + 1
+        month_label = f"{y}-{m:02d}"
+
+        inc = forecast_income
+        exp = forecast_expense
+        balance += inc - exp
+
+        forecast_dates.append(month_label)
+        forecast_balances.append(balance)
+        forecast_income_series.append(inc)
+        forecast_expense_series.append(exp)
+
+    # Chart
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=forecast_dates, y=forecast_balances,
+        mode="lines+markers", name="Projected Balance",
+        line=dict(color="#6C63FF", width=3),
+        fill="tozeroy", fillcolor="rgba(108,99,255,0.1)",
+    ))
+    fig.add_trace(go.Bar(
+        x=forecast_dates, y=forecast_income_series,
+        name="Income", marker_color="rgba(0,208,156,0.6)",
+    ))
+    fig.add_trace(go.Bar(
+        x=forecast_dates, y=[-e for e in forecast_expense_series],
+        name="Expenses", marker_color="rgba(255,107,107,0.6)",
+    ))
+    fig.update_layout(
+        height=400,
+        margin=dict(t=10, b=40, l=40, r=10),
+        legend=dict(orientation="h", y=1.15),
+        xaxis_title="", yaxis_title="Amount ($)",
+        barmode="overlay",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Summary cards
+    net_monthly = forecast_income - forecast_expense
+    end_balance = forecast_balances[-1] if forecast_balances else starting_balance
+    savings_rate = (net_monthly / forecast_income * 100) if forecast_income > 0 else 0
+
+    cf1, cf2, cf3, cf4 = st.columns(4)
+    cf1.metric("Monthly Net", format_currency(net_monthly), delta=f"{'+'if net_monthly>=0 else ''}{format_currency(net_monthly)}")
+    cf2.metric("End Balance", format_currency(end_balance))
+    cf3.metric("Savings Rate", f"{savings_rate:.1f}%")
+    cf4.metric("Bills (Monthly)", format_currency(bills_monthly))
+
+    # Breakdown
+    st.markdown("---")
+    st.subheader("Monthly Breakdown")
+    breakdown_df = pd.DataFrame({
+        "Month": forecast_dates,
+        "Income": [format_currency(i) for i in forecast_income_series],
+        "Expenses": [format_currency(e) for e in forecast_expense_series],
+        "Net": [format_currency(forecast_income - forecast_expense) for _ in forecast_dates],
+        "Balance": [format_currency(b) for b in forecast_balances],
+    })
+    st.dataframe(breakdown_df, use_container_width=True, hide_index=True)
+
+    # Warnings
+    if net_monthly < 0:
+        st.error(f"⚠️ You're projected to lose {format_currency(abs(net_monthly))} per month. Review your expenses!")
+    elif savings_rate < 10:
+        st.warning(f"💡 Your savings rate is only {savings_rate:.1f}%. Aim for at least 20% for financial health.")
+    else:
+        st.success(f"✅ Great! You're saving {savings_rate:.1f}% of your income each month.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NET WORTH TRACKER
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Net Worth":
+    st.title("🏦 Net Worth Tracker")
+
+    # Add account
+    with st.expander("➕ Add Account", expanded=False):
+        with st.form("add_account", clear_on_submit=True):
+            acc_name = st.text_input("Account Name", placeholder="e.g. Checking Account, Student Loan")
+            ac1, ac2, ac3 = st.columns(3)
+            with ac1:
+                acc_type = st.selectbox("Type", ["asset", "liability"])
+            with ac2:
+                acc_balance = st.number_input("Current Balance", min_value=0.0, step=100.0, format="%.2f", key="acc_bal")
+            with ac3:
+                acc_icon_options = {"🏦 Bank": "🏦", "💳 Credit Card": "💳", "🏠 Property": "🏠", "🚗 Vehicle": "🚗",
+                                     "📈 Investment": "📈", "💰 Cash": "💰", "🎓 Student Loan": "🎓", "🏥 Medical": "🏥"}
+                acc_icon_sel = st.selectbox("Icon", list(acc_icon_options.keys()))
+                acc_icon = acc_icon_options[acc_icon_sel]
+
+            if st.form_submit_button("Add Account", type="primary"):
+                if acc_name:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO accounts (id,name,type,balance,icon) VALUES (?,?,?,?,?)",
+                        [str(uuid.uuid4()), acc_name, acc_type, acc_balance, acc_icon],
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Account added!")
+                    st.rerun()
+
+    conn = get_db()
+    accounts = conn.execute("SELECT * FROM accounts ORDER BY type, name").fetchall()
+    snapshots = pd.read_sql_query("SELECT * FROM net_worth_snapshots ORDER BY date", conn)
+    conn.close()
+
+    if accounts:
+        # Calculate current totals
+        total_assets = sum(a["balance"] for a in accounts if a["type"] == "asset")
+        total_liabilities = sum(a["balance"] for a in accounts if a["type"] == "liability")
+        net_worth = total_assets - total_liabilities
+
+        # Summary
+        nw1, nw2, nw3 = st.columns(3)
+        nw1.markdown(f"""
+        <div class="metric-card">
+            <h3>Total Assets</h3>
+            <h1>{format_currency(total_assets)}</h1>
+        </div>""", unsafe_allow_html=True)
+        nw2.markdown(f"""
+        <div class="metric-card expense">
+            <h3>Total Liabilities</h3>
+            <h1>{format_currency(total_liabilities)}</h1>
+        </div>""", unsafe_allow_html=True)
+        nw_color = "#00D09C" if net_worth >= 0 else "#FF6B6B"
+        nw3.markdown(f"""
+        <div class="metric-card savings">
+            <h3>Net Worth</h3>
+            <h1 style="color:{nw_color}">{format_currency(net_worth)}</h1>
+        </div>""", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # Save snapshot button
+        if st.button("📸 Save Today's Snapshot", type="primary"):
+            conn = get_db()
+            snap_date = date.today().isoformat()
+            # Upsert by date
+            existing = conn.execute("SELECT id FROM net_worth_snapshots WHERE date=?", [snap_date]).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE net_worth_snapshots SET total_assets=?, total_liabilities=?, net_worth=? WHERE date=?",
+                    [total_assets, total_liabilities, net_worth, snap_date],
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO net_worth_snapshots (id,date,total_assets,total_liabilities,net_worth) VALUES (?,?,?,?,?)",
+                    [str(uuid.uuid4()), snap_date, total_assets, total_liabilities, net_worth],
+                )
+            conn.commit()
+            conn.close()
+            st.success("Snapshot saved!")
+            st.rerun()
+
+        # Net worth over time chart
+        if not snapshots.empty and len(snapshots) >= 2:
+            st.markdown("---")
+            st.subheader("Net Worth Over Time")
+            fig_nw = go.Figure()
+            fig_nw.add_trace(go.Scatter(
+                x=snapshots["date"], y=snapshots["net_worth"],
+                mode="lines+markers", name="Net Worth",
+                line=dict(color="#6C63FF", width=3),
+                fill="tozeroy", fillcolor="rgba(108,99,255,0.1)",
+            ))
+            fig_nw.add_trace(go.Scatter(
+                x=snapshots["date"], y=snapshots["total_assets"],
+                mode="lines", name="Assets",
+                line=dict(color="#00D09C", width=2, dash="dot"),
+            ))
+            fig_nw.add_trace(go.Scatter(
+                x=snapshots["date"], y=snapshots["total_liabilities"],
+                mode="lines", name="Liabilities",
+                line=dict(color="#FF6B6B", width=2, dash="dot"),
+            ))
+            fig_nw.update_layout(
+                height=350, margin=dict(t=10, b=40, l=40, r=10),
+                legend=dict(orientation="h", y=1.1),
+            )
+            st.plotly_chart(fig_nw, use_container_width=True)
+
+        # Account lists
+        st.markdown("---")
+        assets = [a for a in accounts if a["type"] == "asset"]
+        liabilities = [a for a in accounts if a["type"] == "liability"]
+
+        acol1, acol2 = st.columns(2)
+        with acol1:
+            st.subheader("💚 Assets")
+            for a in assets:
+                c1, c2, c3 = st.columns([0.5, 3, 1])
+                with c1:
+                    st.markdown(f"<span style='font-size:24px'>{a['icon']}</span>", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"**{a['name']}**")
+                    with st.popover("✏️ Update"):
+                        new_bal = st.number_input("Balance", value=float(a["balance"]), key=f"upd_a_{a['id']}", format="%.2f")
+                        if st.button("Save", key=f"save_a_{a['id']}"):
+                            conn = get_db()
+                            conn.execute("UPDATE accounts SET balance=? WHERE id=?", [new_bal, a["id"]])
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+                with c3:
+                    st.markdown(f"<span style='color:#00D09C;font-weight:700'>{format_currency(a['balance'])}</span>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"del_acc_{a['id']}"):
+                    conn = get_db()
+                    conn.execute("DELETE FROM accounts WHERE id=?", [a["id"]])
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+                st.divider()
+
+        with acol2:
+            st.subheader("🔴 Liabilities")
+            for l in liabilities:
+                c1, c2, c3 = st.columns([0.5, 3, 1])
+                with c1:
+                    st.markdown(f"<span style='font-size:24px'>{l['icon']}</span>", unsafe_allow_html=True)
+                with c2:
+                    st.markdown(f"**{l['name']}**")
+                    with st.popover("✏️ Update"):
+                        new_bal = st.number_input("Balance", value=float(l["balance"]), key=f"upd_l_{l['id']}", format="%.2f")
+                        if st.button("Save", key=f"save_l_{l['id']}"):
+                            conn = get_db()
+                            conn.execute("UPDATE accounts SET balance=? WHERE id=?", [new_bal, l["id"]])
+                            conn.commit()
+                            conn.close()
+                            st.rerun()
+                with c3:
+                    st.markdown(f"<span style='color:#FF6B6B;font-weight:700'>{format_currency(l['balance'])}</span>", unsafe_allow_html=True)
+                if st.button("🗑️", key=f"del_acc_{l['id']}"):
+                    conn = get_db()
+                    conn.execute("DELETE FROM accounts WHERE id=?", [l["id"]])
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+                st.divider()
+
+            if not liabilities:
+                st.success("No liabilities! 🎉")
+    else:
+        st.info("No accounts yet. Click '➕ Add Account' to start tracking your net worth.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# INSIGHTS
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Insights":
+    st.title("🔍 Spending Insights")
+
+    conn = get_db()
+
+    # Get data for last 6 months
+    six_months_ago = (date.today().replace(day=1) - timedelta(days=180)).strftime("%Y-%m-%d")
+    all_txns = pd.read_sql_query(
+        "SELECT * FROM transactions WHERE date >= ? ORDER BY date DESC",
+        conn, params=[six_months_ago],
+    )
+    conn.close()
+
+    if all_txns.empty:
+        st.info("Not enough data for insights. Add at least 1-2 months of transactions.")
+    else:
+        all_txns["month"] = all_txns["date"].str[:7]
+        current_month = st.session_state.current_month
+        prev_month_date = datetime.strptime(current_month + "-01", "%Y-%m-%d").date() - timedelta(days=1)
+        prev_month = prev_month_date.strftime("%Y-%m")
+
+        cur_data = all_txns[all_txns["month"] == current_month]
+        prev_data = all_txns[all_txns["month"] == prev_month]
+
+        cur_expenses = cur_data[cur_data["type"] == "expense"]["amount"].sum()
+        prev_expenses = prev_data[prev_data["type"] == "expense"]["amount"].sum()
+        cur_income = cur_data[cur_data["type"] == "income"]["amount"].sum()
+        prev_income = prev_data[prev_data["type"] == "income"]["amount"].sum()
+
+        # Month-over-month comparison
+        st.subheader("📊 Month-over-Month")
+        m1, m2, m3 = st.columns(3)
+        exp_delta = cur_expenses - prev_expenses
+        inc_delta = cur_income - prev_income
+        m1.metric("Income", format_currency(cur_income), delta=f"{'+' if inc_delta>=0 else ''}{format_currency(inc_delta)} vs last month")
+        m2.metric("Expenses", format_currency(cur_expenses), delta=f"{'+' if exp_delta>=0 else ''}{format_currency(exp_delta)} vs last month", delta_color="inverse")
+        net = cur_income - cur_expenses
+        m3.metric("Net", format_currency(net))
+
+        st.markdown("---")
+
+        # Spending trend (6 months)
+        st.subheader("📈 6-Month Spending Trend")
+        expenses_only = all_txns[all_txns["type"] == "expense"]
+        if not expenses_only.empty:
+            monthly_spend = expenses_only.groupby("month")["amount"].sum().reset_index()
+            monthly_spend = monthly_spend.sort_values("month")
+            avg_spend = monthly_spend["amount"].mean()
+
+            fig_trend = go.Figure()
+            fig_trend.add_trace(go.Scatter(
+                x=monthly_spend["month"], y=monthly_spend["amount"],
+                mode="lines+markers+text", name="Spending",
+                line=dict(color="#FF6B6B", width=3),
+                text=[format_currency(a) for a in monthly_spend["amount"]],
+                textposition="top center",
+            ))
+            fig_trend.add_hline(y=avg_spend, line_dash="dash", line_color="#9CA3AF",
+                                annotation_text=f"Avg: {format_currency(avg_spend)}")
+            fig_trend.update_layout(
+                height=300, margin=dict(t=30, b=40, l=40, r=10),
+                showlegend=False, yaxis_title="Expenses ($)",
+            )
+            st.plotly_chart(fig_trend, use_container_width=True)
+
+        st.markdown("---")
+
+        # Category comparison: this month vs last month
+        st.subheader("🏷️ Category Changes")
+        cur_cats = cur_data[cur_data["type"] == "expense"].groupby("category")["amount"].sum()
+        prev_cats = prev_data[prev_data["type"] == "expense"].groupby("category")["amount"].sum()
+        all_cats_set = set(cur_cats.index) | set(prev_cats.index)
+
+        if all_cats_set:
+            changes = []
+            for c in all_cats_set:
+                cur_val = cur_cats.get(c, 0)
+                prev_val = prev_cats.get(c, 0)
+                diff = cur_val - prev_val
+                pct_change = (diff / prev_val * 100) if prev_val > 0 else (100 if cur_val > 0 else 0)
+                changes.append({"category": c, "current": cur_val, "previous": prev_val, "change": diff, "pct": pct_change})
+
+            changes.sort(key=lambda x: abs(x["change"]), reverse=True)
+
+            for ch in changes[:8]:
+                icon = cat_icon(ch["category"])
+                name = cat_name(ch["category"])
+                arrow = "🔺" if ch["change"] > 0 else ("🔻" if ch["change"] < 0 else "➡️")
+                color = "#FF6B6B" if ch["change"] > 0 else "#00D09C" if ch["change"] < 0 else "#9CA3AF"
+
+                cc1, cc2, cc3, cc4 = st.columns([0.5, 2.5, 1.5, 1.5])
+                with cc1:
+                    st.markdown(f"{icon}")
+                with cc2:
+                    st.markdown(f"**{name}**")
+                with cc3:
+                    st.markdown(f"{format_currency(ch['previous'])} → {format_currency(ch['current'])}")
+                with cc4:
+                    st.markdown(f"<span style='color:{color}'>{arrow} {ch['pct']:+.0f}%</span>", unsafe_allow_html=True)
+                st.divider()
+
+        st.markdown("---")
+
+        # Anomaly detection — unusually large transactions
+        st.subheader("⚡ Unusual Transactions")
+        cur_expenses_df = cur_data[cur_data["type"] == "expense"].copy()
+        if len(cur_expenses_df) >= 3:
+            mean_amt = cur_expenses_df["amount"].mean()
+            std_amt = cur_expenses_df["amount"].std()
+            threshold = mean_amt + 2 * std_amt if std_amt > 0 else mean_amt * 2
+
+            anomalies = cur_expenses_df[cur_expenses_df["amount"] > threshold]
+            if not anomalies.empty:
+                for _, a in anomalies.iterrows():
+                    desc = a["description"] or cat_name(a["category"])
+                    st.warning(f"🚨 **{desc}** — {format_currency(a['amount'])} on {a['date']} (avg is {format_currency(mean_amt)})")
+            else:
+                st.success("No unusual spending detected this month. 👍")
+        else:
+            st.info("Need more transactions this month to detect anomalies.")
+
+        st.markdown("---")
+
+        # Top merchants/descriptions
+        st.subheader("🏪 Top Spending Descriptions")
+        if not expenses_only.empty:
+            top_desc = expenses_only[expenses_only["description"] != ""].groupby("description")["amount"].agg(["sum", "count"]).reset_index()
+            top_desc.columns = ["Description", "Total", "Count"]
+            top_desc = top_desc.sort_values("Total", ascending=False).head(10)
+
+            if not top_desc.empty:
+                fig_bar = px.bar(
+                    top_desc, x="Total", y="Description", orientation="h",
+                    color="Total", color_continuous_scale=["#6C63FF", "#FF6B6B"],
+                    text=[format_currency(t) for t in top_desc["Total"]],
+                )
+                fig_bar.update_layout(
+                    height=max(250, len(top_desc) * 35),
+                    margin=dict(t=10, b=10, l=10, r=10),
+                    showlegend=False, coloraxis_showscale=False,
+                    yaxis=dict(autorange="reversed"),
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.info("Add descriptions to your transactions for merchant insights.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DEBT PAYOFF PLANNER
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Debt Payoff":
+    st.title("💳 Debt Payoff Planner")
+
+    # Add debt
+    with st.expander("➕ Add Debt", expanded=False):
+        with st.form("add_debt", clear_on_submit=True):
+            debt_name = st.text_input("Debt Name", placeholder="e.g. Credit Card, Student Loan")
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                debt_total = st.number_input("Total Amount", min_value=0.01, step=100.0, format="%.2f", key="debt_total")
+                debt_rate = st.number_input("Interest Rate (%)", min_value=0.0, max_value=100.0, step=0.1, format="%.2f", key="debt_rate")
+            with dc2:
+                debt_remaining = st.number_input("Remaining Balance", min_value=0.01, step=100.0, format="%.2f", key="debt_remain")
+                debt_min = st.number_input("Minimum Payment", min_value=0.0, step=10.0, format="%.2f", key="debt_min")
+
+            if st.form_submit_button("Add Debt", type="primary"):
+                if debt_name:
+                    conn = get_db()
+                    conn.execute(
+                        "INSERT INTO debts (id,name,total_amount,remaining_amount,interest_rate,min_payment) VALUES (?,?,?,?,?,?)",
+                        [str(uuid.uuid4()), debt_name, debt_total, debt_remaining, debt_rate, debt_min],
+                    )
+                    conn.commit()
+                    conn.close()
+                    st.success("Debt added!")
+                    st.rerun()
+
+    conn = get_db()
+    debts = conn.execute("SELECT * FROM debts ORDER BY interest_rate DESC").fetchall()
+    conn.close()
+
+    if debts:
+        total_debt = sum(d["remaining_amount"] for d in debts)
+        total_min = sum(d["min_payment"] for d in debts)
+        avg_rate = sum(d["interest_rate"] * d["remaining_amount"] for d in debts) / total_debt if total_debt > 0 else 0
+
+        # Summary
+        ds1, ds2, ds3 = st.columns(3)
+        ds1.metric("Total Debt", format_currency(total_debt))
+        ds2.metric("Monthly Minimums", format_currency(total_min))
+        ds3.metric("Avg Interest Rate", f"{avg_rate:.1f}%")
+
+        st.markdown("---")
+
+        # Strategy selector
+        st.subheader("Choose Your Strategy")
+        strategy = st.radio(
+            "Payoff Strategy",
+            ["Avalanche (Highest Interest First)", "Snowball (Smallest Balance First)"],
+            horizontal=True,
+            key="debt_strategy",
+        )
+        extra_payment = st.number_input(
+            "Extra Monthly Payment (beyond minimums)",
+            min_value=0.0, step=50.0, format="%.2f", key="extra_pay",
+        )
+
+        # Calculate payoff schedule
+        if strategy.startswith("Avalanche"):
+            sorted_debts = sorted(debts, key=lambda d: -d["interest_rate"])
+        else:
+            sorted_debts = sorted(debts, key=lambda d: d["remaining_amount"])
+
+        # Simulate payoff
+        debt_balances = {d["id"]: float(d["remaining_amount"]) for d in sorted_debts}
+        debt_info = {d["id"]: d for d in sorted_debts}
+        monthly_budget = total_min + extra_payment
+
+        month_count = 0
+        total_interest_paid = 0
+        payoff_timeline = []  # (month, total_remaining, interest_this_month)
+        max_months = 360  # 30 year cap
+
+        while sum(debt_balances.values()) > 0.01 and month_count < max_months:
+            month_count += 1
+            month_interest = 0
+            remaining_budget = monthly_budget
+
+            # Apply interest to all debts
+            for did in debt_balances:
+                if debt_balances[did] > 0:
+                    monthly_rate = debt_info[did]["interest_rate"] / 100 / 12
+                    interest = debt_balances[did] * monthly_rate
+                    debt_balances[did] += interest
+                    month_interest += interest
+                    total_interest_paid += interest
+
+            # Pay minimums first
+            for did in debt_balances:
+                if debt_balances[did] > 0:
+                    min_pay = min(debt_info[did]["min_payment"], debt_balances[did])
+                    payment = min(min_pay, remaining_budget)
+                    debt_balances[did] -= payment
+                    remaining_budget -= payment
+
+            # Apply extra to priority debt
+            for did in [d["id"] for d in sorted_debts]:
+                if debt_balances[did] > 0 and remaining_budget > 0:
+                    payment = min(debt_balances[did], remaining_budget)
+                    debt_balances[did] -= payment
+                    remaining_budget -= payment
+
+            total_remaining = sum(max(0, b) for b in debt_balances.values())
+            payoff_timeline.append((month_count, total_remaining, month_interest))
+
+        # Results
+        st.markdown("---")
+        st.subheader("📊 Payoff Timeline")
+
+        years = month_count // 12
+        months_rem = month_count % 12
+        time_str = f"{years}y {months_rem}m" if years > 0 else f"{months_rem} months"
+
+        r1, r2, r3 = st.columns(3)
+        r1.metric("Debt-Free In", time_str)
+        r2.metric("Total Interest", format_currency(total_interest_paid))
+        r3.metric("Total Paid", format_currency(total_debt + total_interest_paid))
+
+        # Payoff chart
+        if payoff_timeline:
+            tl_df = pd.DataFrame(payoff_timeline, columns=["Month", "Remaining", "Interest"])
+
+            fig_debt = go.Figure()
+            fig_debt.add_trace(go.Scatter(
+                x=tl_df["Month"], y=tl_df["Remaining"],
+                mode="lines", name="Remaining Debt",
+                line=dict(color="#FF6B6B", width=3),
+                fill="tozeroy", fillcolor="rgba(255,107,107,0.15)",
+            ))
+            fig_debt.update_layout(
+                height=350, margin=dict(t=10, b=40, l=40, r=10),
+                xaxis_title="Months", yaxis_title="Remaining Balance ($)",
+                showlegend=False,
+            )
+            st.plotly_chart(fig_debt, use_container_width=True)
+
+        # Individual debt cards
+        st.markdown("---")
+        st.subheader("Your Debts")
+        for d in debts:
+            paid_pct = 1 - (d["remaining_amount"] / d["total_amount"]) if d["total_amount"] > 0 else 0
+            paid_pct = max(0, min(1, paid_pct))
+
+            dc1, dc2, dc3 = st.columns([3, 1.5, 0.5])
+            with dc1:
+                st.markdown(f"**{d['name']}** &nbsp; <small style='color:#9CA3AF'>{d['interest_rate']}% APR</small>", unsafe_allow_html=True)
+                st.progress(paid_pct)
+                st.caption(f"{format_currency(d['remaining_amount'])} remaining of {format_currency(d['total_amount'])} ({paid_pct*100:.0f}% paid)")
+            with dc2:
+                st.metric("Min Payment", format_currency(d["min_payment"]))
+            with dc3:
+                if st.button("🗑️", key=f"del_debt_{d['id']}"):
+                    conn = get_db()
+                    conn.execute("DELETE FROM debts WHERE id=?", [d["id"]])
+                    conn.commit()
+                    conn.close()
+                    st.rerun()
+            st.divider()
+
+        # Tips
+        st.markdown("---")
+        st.subheader("💡 Tips")
+        if extra_payment == 0:
+            st.info("Add extra monthly payments above to see how much faster you can become debt-free!")
+        else:
+            # Compare with minimum-only
+            min_only_months = 0
+            min_only_interest = 0
+            min_balances = {d["id"]: float(d["remaining_amount"]) for d in debts}
+            while sum(min_balances.values()) > 0.01 and min_only_months < max_months:
+                min_only_months += 1
+                for did in min_balances:
+                    if min_balances[did] > 0:
+                        monthly_rate = debt_info[did]["interest_rate"] / 100 / 12
+                        interest = min_balances[did] * monthly_rate
+                        min_balances[did] += interest
+                        min_only_interest += interest
+                        payment = min(debt_info[did]["min_payment"], min_balances[did])
+                        min_balances[did] -= payment
+
+            months_saved = min_only_months - month_count
+            interest_saved = min_only_interest - total_interest_paid
+            if months_saved > 0:
+                st.success(f"🎉 Your extra {format_currency(extra_payment)}/month saves you **{months_saved} months** and **{format_currency(interest_saved)}** in interest!")
+    else:
+        st.info("No debts tracked. Click '➕ Add Debt' to start your payoff plan.")
+        st.markdown("""
+        **How it works:**
+        1. Add your debts with their balances, interest rates, and minimum payments
+        2. Choose a payoff strategy:
+           - **Avalanche** — Pay highest interest first (saves the most money)
+           - **Snowball** — Pay smallest balance first (quicker wins for motivation)
+        3. Add extra monthly payments to see how much faster you can be debt-free
+        """)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
