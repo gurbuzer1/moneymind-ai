@@ -267,7 +267,7 @@ with st.sidebar:
     NAV_PAGES = [
         "Dashboard", "Transactions", "AI Chat", "Budget", "Savings",
         "Recurring Bills", "Cash Flow", "Net Worth", "Insights", "Debt Payoff",
-        "Profile",
+        "PPT Report", "Profile",
     ]
     page = st.radio(
         "Navigation",
@@ -1888,6 +1888,480 @@ elif page == "Debt Payoff":
            - **Snowball** — Pay smallest balance first (quicker wins for motivation)
         3. Add extra monthly payments to see how much faster you can be debt-free
         """)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PPT REPORT
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "PPT Report":
+    st.title("📊 Executive Action Plan")
+    st.markdown("Generate a PowerPoint presentation with your financial snapshot and key action items.")
+
+    from pptx import Presentation
+    from pptx.util import Inches, Pt, Emu
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    from pptx.enum.shapes import MSO_SHAPE
+    import io
+    import calendar as cal_mod
+
+    # --- Gather all data ---
+    conn = get_db()
+    profile = dict(conn.execute("SELECT * FROM user_profile LIMIT 1").fetchone())
+    month = st.session_state.current_month
+    month_label = datetime.strptime(month + "-01", "%Y-%m-%d").strftime("%B %Y")
+
+    # Transactions
+    cur_txns = pd.read_sql_query(
+        "SELECT * FROM transactions WHERE date LIKE ? ORDER BY date DESC",
+        conn, params=[f"{month}%"],
+    )
+    prev_month_d = datetime.strptime(month + "-01", "%Y-%m-%d").date() - timedelta(days=1)
+    prev_month = prev_month_d.strftime("%Y-%m")
+    prev_txns = pd.read_sql_query(
+        "SELECT * FROM transactions WHERE date LIKE ? ORDER BY date DESC",
+        conn, params=[f"{prev_month}%"],
+    )
+
+    # Summaries
+    cur_income = cur_txns[cur_txns["type"] == "income"]["amount"].sum() if not cur_txns.empty else 0
+    cur_expenses = cur_txns[cur_txns["type"] == "expense"]["amount"].sum() if not cur_txns.empty else 0
+    cur_net = cur_income - cur_expenses
+    cur_savings_rate = (cur_net / cur_income * 100) if cur_income > 0 else 0
+
+    prev_income = prev_txns[prev_txns["type"] == "income"]["amount"].sum() if not prev_txns.empty else 0
+    prev_expenses = prev_txns[prev_txns["type"] == "expense"]["amount"].sum() if not prev_txns.empty else 0
+
+    # Category totals
+    cat_totals_df = cur_txns[cur_txns["type"] == "expense"].groupby("category")["amount"].sum().sort_values(ascending=False) if not cur_txns.empty else pd.Series(dtype=float)
+
+    # Budgets
+    budgets = conn.execute("SELECT * FROM budgets WHERE month=?", [month]).fetchall()
+    budget_alerts = []
+    for b in budgets:
+        spent = cat_totals_df.get(b["category"], 0)
+        pct = spent / b["monthly_limit"] if b["monthly_limit"] > 0 else 0
+        if pct >= 1:
+            budget_alerts.append(f"{cat_name(b['category'])}: OVER by {format_currency(spent - b['monthly_limit'])}")
+        elif pct >= 0.8:
+            budget_alerts.append(f"{cat_name(b['category'])}: {pct*100:.0f}% used — watch closely")
+
+    # Bills
+    bills = conn.execute("SELECT * FROM recurring_bills WHERE is_active=1").fetchall()
+    bills_monthly = 0
+    for b in bills:
+        freq = b["frequency"]
+        if freq == "weekly": bills_monthly += b["amount"] * 4.33
+        elif freq == "biweekly": bills_monthly += b["amount"] * 2.17
+        elif freq == "monthly": bills_monthly += b["amount"]
+        elif freq == "quarterly": bills_monthly += b["amount"] / 3
+        elif freq == "yearly": bills_monthly += b["amount"] / 12
+
+    # Debts
+    debts = conn.execute("SELECT * FROM debts ORDER BY interest_rate DESC").fetchall()
+    total_debt = sum(d["remaining_amount"] for d in debts)
+
+    # Net worth
+    accounts = conn.execute("SELECT * FROM accounts").fetchall()
+    total_assets = sum(a["balance"] for a in accounts if a["type"] == "asset")
+    total_liabilities = sum(a["balance"] for a in accounts if a["type"] == "liability")
+    net_worth = total_assets - total_liabilities
+
+    # Savings goals
+    goals = conn.execute("SELECT * FROM savings_goals").fetchall()
+    conn.close()
+
+    # --- Build action items ---
+    actions = []
+    priorities = []  # (priority_level, action_text)
+
+    # 1. Budget overruns
+    if budget_alerts:
+        for alert in budget_alerts:
+            priorities.append(("HIGH", f"Budget alert: {alert}"))
+
+    # 2. Negative savings rate
+    if cur_savings_rate < 0:
+        priorities.append(("CRITICAL", f"You're spending more than you earn. Net: {format_currency(cur_net)}"))
+    elif cur_savings_rate < 10:
+        priorities.append(("HIGH", f"Savings rate is only {cur_savings_rate:.0f}% — target at least 20%"))
+    elif cur_savings_rate < 20:
+        priorities.append(("MEDIUM", f"Savings rate is {cur_savings_rate:.0f}% — good, push toward 20%+"))
+
+    # 3. Expense increase
+    if prev_expenses > 0 and cur_expenses > prev_expenses:
+        pct_inc = (cur_expenses - prev_expenses) / prev_expenses * 100
+        if pct_inc > 15:
+            priorities.append(("HIGH", f"Expenses up {pct_inc:.0f}% vs last month — review spending"))
+        elif pct_inc > 5:
+            priorities.append(("MEDIUM", f"Expenses up {pct_inc:.0f}% vs last month"))
+
+    # 4. Top spending categories
+    if not cat_totals_df.empty:
+        top_cat = cat_totals_df.index[0]
+        top_amt = cat_totals_df.iloc[0]
+        top_pct = (top_amt / cur_expenses * 100) if cur_expenses > 0 else 0
+        if top_pct > 40:
+            priorities.append(("MEDIUM", f"{cat_name(top_cat)} is {top_pct:.0f}% of spending — consider diversifying"))
+
+    # 5. High interest debt
+    for d in debts:
+        if d["interest_rate"] > 15:
+            priorities.append(("HIGH", f"Pay down {d['name']} ({d['interest_rate']}% APR) — high interest debt"))
+
+    # 6. Bills vs income
+    if cur_income > 0 and bills_monthly > cur_income * 0.5:
+        priorities.append(("HIGH", f"Fixed bills are {bills_monthly/cur_income*100:.0f}% of income — reduce commitments"))
+
+    # 7. Savings goals behind schedule
+    for g in goals:
+        if g["target_date"] and g["target_amount"] > 0:
+            try:
+                target_dt = datetime.strptime(g["target_date"], "%Y-%m-%d").date()
+                days_left = (target_dt - date.today()).days
+                if days_left > 0:
+                    remaining = g["target_amount"] - g["current_amount"]
+                    monthly_needed = remaining / (days_left / 30)
+                    if monthly_needed > cur_net and cur_net > 0:
+                        priorities.append(("MEDIUM", f"'{g['name']}' needs {format_currency(monthly_needed)}/mo — above current surplus"))
+            except (ValueError, ZeroDivisionError):
+                pass
+
+    # 8. No emergency fund check
+    if not any(g["name"].lower().find("emergency") >= 0 for g in goals):
+        priorities.append(("MEDIUM", "Consider starting an emergency fund (3-6 months expenses)"))
+
+    # Fill if empty
+    if not priorities:
+        priorities.append(("LOW", "Finances look healthy! Keep it up and review monthly."))
+
+    # Sort by severity
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+    priorities.sort(key=lambda x: severity_order.get(x[0], 99))
+
+    # --- Preview ---
+    st.markdown("### Preview")
+    user_name = profile.get("display_name", "") or "User"
+
+    with st.expander("Slide 1: Title", expanded=True):
+        st.markdown(f"**{user_name}'s Financial Action Plan**")
+        st.caption(f"{month_label} | MoneyMind AI")
+
+    with st.expander("Slide 2: Financial Snapshot"):
+        snap_c1, snap_c2 = st.columns(2)
+        with snap_c1:
+            st.markdown(f"- Income: **{format_currency(cur_income)}**")
+            st.markdown(f"- Expenses: **{format_currency(cur_expenses)}**")
+            st.markdown(f"- Net: **{format_currency(cur_net)}**")
+            st.markdown(f"- Savings Rate: **{cur_savings_rate:.0f}%**")
+        with snap_c2:
+            st.markdown(f"- Net Worth: **{format_currency(net_worth)}**")
+            st.markdown(f"- Total Debt: **{format_currency(total_debt)}**")
+            st.markdown(f"- Monthly Bills: **{format_currency(bills_monthly)}**")
+            st.markdown(f"- Active Goals: **{len(goals)}**")
+
+    with st.expander("Slide 3: Top Spending"):
+        for cat_id, amt in cat_totals_df.head(6).items():
+            pct = (amt / cur_expenses * 100) if cur_expenses > 0 else 0
+            st.markdown(f"- {cat_icon(cat_id)} {cat_name(cat_id)}: **{format_currency(amt)}** ({pct:.0f}%)")
+
+    with st.expander("Slide 4: Action Items"):
+        for level, text in priorities:
+            icon_map = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🟢"}
+            st.markdown(f"{icon_map.get(level, '⚪')} **[{level}]** {text}")
+
+    with st.expander("Slide 5: Debt Overview"):
+        if debts:
+            for d in debts:
+                st.markdown(f"- {d['name']}: **{format_currency(d['remaining_amount'])}** at {d['interest_rate']}% APR")
+        else:
+            st.markdown("No debts — great position!")
+
+    with st.expander("Slide 6: Goals & Next Steps"):
+        if goals:
+            for g in goals:
+                pct = (g["current_amount"] / g["target_amount"] * 100) if g["target_amount"] > 0 else 0
+                st.markdown(f"- {g['name']}: **{pct:.0f}%** complete ({format_currency(g['current_amount'])} / {format_currency(g['target_amount'])})")
+        st.markdown("---")
+        st.markdown("**Next steps:**")
+        for _, text in priorities[:3]:
+            st.markdown(f"1. {text}")
+
+    # --- Generate PPTX ---
+    st.markdown("---")
+
+    def build_pptx():
+        prs = Presentation()
+        prs.slide_width = Inches(13.333)
+        prs.slide_height = Inches(7.5)
+
+        # Colors
+        DARK_BG = RGBColor(0x1A, 0x1A, 0x2E)
+        PRIMARY = RGBColor(0x6C, 0x63, 0xFF)
+        GREEN = RGBColor(0x00, 0xD0, 0x9C)
+        RED = RGBColor(0xFF, 0x6B, 0x6B)
+        ORANGE = RGBColor(0xFF, 0xB0, 0x20)
+        WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+        LIGHT_GRAY = RGBColor(0x9C, 0xA3, 0xAF)
+        CARD_BG = RGBColor(0x23, 0x23, 0x3F)
+
+        def add_bg(slide, color=DARK_BG):
+            bg = slide.background
+            fill = bg.fill
+            fill.solid()
+            fill.fore_color.rgb = color
+
+        def add_text_box(slide, left, top, width, height, text, font_size=18, color=WHITE, bold=False, alignment=PP_ALIGN.LEFT):
+            txBox = slide.shapes.add_textbox(Inches(left), Inches(top), Inches(width), Inches(height))
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = text
+            p.font.size = Pt(font_size)
+            p.font.color.rgb = color
+            p.font.bold = bold
+            p.alignment = alignment
+            return tf
+
+        def add_card(slide, left, top, width, height, fill_color=CARD_BG):
+            shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(left), Inches(top), Inches(width), Inches(height))
+            shape.fill.solid()
+            shape.fill.fore_color.rgb = fill_color
+            shape.line.fill.background()
+            shape.shadow.inherit = False
+            return shape
+
+        # ---- SLIDE 1: Title ----
+        slide1 = prs.slides.add_slide(prs.slide_layouts[6])  # blank
+        add_bg(slide1)
+
+        # Accent bar
+        bar = slide1.shapes.add_shape(MSO_SHAPE.RECTANGLE, Inches(0), Inches(0), Inches(0.15), Inches(7.5))
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = PRIMARY
+        bar.line.fill.background()
+
+        add_text_box(slide1, 1.5, 1.5, 10, 1.5, f"{user_name}'s", font_size=28, color=LIGHT_GRAY)
+        add_text_box(slide1, 1.5, 2.3, 10, 1.5, "Financial Action Plan", font_size=48, color=WHITE, bold=True)
+        add_text_box(slide1, 1.5, 3.8, 10, 0.8, month_label, font_size=24, color=PRIMARY, bold=True)
+        add_text_box(slide1, 1.5, 5.5, 10, 0.5, "Generated by MoneyMind AI", font_size=14, color=LIGHT_GRAY)
+
+        # ---- SLIDE 2: Financial Snapshot ----
+        slide2 = prs.slides.add_slide(prs.slide_layouts[6])
+        add_bg(slide2)
+        add_text_box(slide2, 0.8, 0.4, 10, 0.8, "Financial Snapshot", font_size=36, color=WHITE, bold=True)
+        add_text_box(slide2, 0.8, 1.0, 10, 0.5, month_label, font_size=16, color=LIGHT_GRAY)
+
+        # Metric cards row 1
+        card_data = [
+            ("Income", format_currency(cur_income), PRIMARY),
+            ("Expenses", format_currency(cur_expenses), RED),
+            ("Net Savings", format_currency(cur_net), GREEN if cur_net >= 0 else RED),
+            ("Savings Rate", f"{cur_savings_rate:.0f}%", GREEN if cur_savings_rate >= 20 else ORANGE if cur_savings_rate >= 10 else RED),
+        ]
+        for i, (label, value, color) in enumerate(card_data):
+            x = 0.8 + i * 3.1
+            add_card(slide2, x, 1.6, 2.8, 1.4)
+            add_text_box(slide2, x + 0.2, 1.75, 2.4, 0.4, label, font_size=14, color=LIGHT_GRAY)
+            add_text_box(slide2, x + 0.2, 2.15, 2.4, 0.6, value, font_size=28, color=color, bold=True)
+
+        # Metric cards row 2
+        card_data2 = [
+            ("Net Worth", format_currency(net_worth), GREEN if net_worth >= 0 else RED),
+            ("Total Debt", format_currency(total_debt), RED if total_debt > 0 else GREEN),
+            ("Monthly Bills", format_currency(bills_monthly), WHITE),
+            ("Savings Goals", f"{len(goals)} active", WHITE),
+        ]
+        for i, (label, value, color) in enumerate(card_data2):
+            x = 0.8 + i * 3.1
+            add_card(slide2, x, 3.3, 2.8, 1.4)
+            add_text_box(slide2, x + 0.2, 3.45, 2.4, 0.4, label, font_size=14, color=LIGHT_GRAY)
+            add_text_box(slide2, x + 0.2, 3.85, 2.4, 0.6, value, font_size=28, color=color, bold=True)
+
+        # MoM comparison
+        if prev_expenses > 0:
+            exp_change = (cur_expenses - prev_expenses) / prev_expenses * 100
+            direction = "UP" if exp_change > 0 else "DOWN"
+            change_color = RED if exp_change > 0 else GREEN
+            add_text_box(slide2, 0.8, 5.2, 12, 0.5,
+                         f"vs Last Month:  Expenses {direction} {abs(exp_change):.0f}%  |  "
+                         f"Income {'UP' if cur_income > prev_income else 'DOWN'} {abs((cur_income-prev_income)/prev_income*100) if prev_income > 0 else 0:.0f}%",
+                         font_size=16, color=LIGHT_GRAY)
+
+        # ---- SLIDE 3: Top Spending ----
+        slide3 = prs.slides.add_slide(prs.slide_layouts[6])
+        add_bg(slide3)
+        add_text_box(slide3, 0.8, 0.4, 10, 0.8, "Where Your Money Goes", font_size=36, color=WHITE, bold=True)
+
+        if not cat_totals_df.empty:
+            top_cats = cat_totals_df.head(8)
+            max_amt = top_cats.max() if len(top_cats) > 0 else 1
+
+            for i, (cat_id, amt) in enumerate(top_cats.items()):
+                y = 1.5 + i * 0.7
+                pct = (amt / cur_expenses * 100) if cur_expenses > 0 else 0
+
+                # Category label
+                add_text_box(slide3, 0.8, y, 3, 0.4, f"{cat_name(cat_id)}", font_size=16, color=WHITE)
+
+                # Bar
+                bar_width = max(0.3, (amt / max_amt) * 7)
+                bar_shape = slide3.shapes.add_shape(
+                    MSO_SHAPE.ROUNDED_RECTANGLE,
+                    Inches(4), Inches(y + 0.05), Inches(bar_width), Inches(0.35),
+                )
+                bar_shape.fill.solid()
+                cat_rgb = cat_color(cat_id).lstrip("#")
+                bar_shape.fill.fore_color.rgb = RGBColor(int(cat_rgb[:2], 16), int(cat_rgb[2:4], 16), int(cat_rgb[4:6], 16))
+                bar_shape.line.fill.background()
+
+                # Amount label
+                add_text_box(slide3, 11.3, y, 2, 0.4, f"{format_currency(amt)} ({pct:.0f}%)", font_size=14, color=LIGHT_GRAY, alignment=PP_ALIGN.RIGHT)
+        else:
+            add_text_box(slide3, 0.8, 2, 10, 0.5, "No expense data this month", font_size=18, color=LIGHT_GRAY)
+
+        # ---- SLIDE 4: Action Items (the key slide) ----
+        slide4 = prs.slides.add_slide(prs.slide_layouts[6])
+        add_bg(slide4)
+        add_text_box(slide4, 0.8, 0.4, 10, 0.8, "Action Items", font_size=36, color=WHITE, bold=True)
+        add_text_box(slide4, 0.8, 1.0, 10, 0.5, "What you need to do — ranked by priority", font_size=16, color=LIGHT_GRAY)
+
+        color_map = {"CRITICAL": RED, "HIGH": ORANGE, "MEDIUM": RGBColor(0xFF, 0xD7, 0x00), "LOW": GREEN}
+        label_icons = {"CRITICAL": "!!!", "HIGH": "!!", "MEDIUM": "!", "LOW": "OK"}
+
+        for i, (level, text) in enumerate(priorities[:8]):
+            y = 1.7 + i * 0.65
+            card_color = CARD_BG
+            add_card(slide4, 0.8, y, 11.7, 0.55, fill_color=card_color)
+
+            # Priority badge
+            badge = slide4.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(1.0), Inches(y + 0.08), Inches(1.1), Inches(0.38))
+            badge.fill.solid()
+            badge.fill.fore_color.rgb = color_map.get(level, LIGHT_GRAY)
+            badge.line.fill.background()
+            tf = badge.text_frame
+            tf.word_wrap = False
+            p = tf.paragraphs[0]
+            p.text = level
+            p.font.size = Pt(11)
+            p.font.color.rgb = DARK_BG
+            p.font.bold = True
+            p.alignment = PP_ALIGN.CENTER
+
+            # Action text
+            add_text_box(slide4, 2.3, y + 0.05, 9.8, 0.45, text, font_size=15, color=WHITE)
+
+        # ---- SLIDE 5: Debt Overview ----
+        slide5 = prs.slides.add_slide(prs.slide_layouts[6])
+        add_bg(slide5)
+        add_text_box(slide5, 0.8, 0.4, 10, 0.8, "Debt Overview", font_size=36, color=WHITE, bold=True)
+
+        if debts:
+            add_card(slide5, 0.8, 1.3, 3.5, 1.2)
+            add_text_box(slide5, 1.0, 1.4, 3, 0.4, "Total Debt", font_size=14, color=LIGHT_GRAY)
+            add_text_box(slide5, 1.0, 1.8, 3, 0.5, format_currency(total_debt), font_size=28, color=RED, bold=True)
+
+            weighted_rate = sum(d["interest_rate"] * d["remaining_amount"] for d in debts) / total_debt if total_debt > 0 else 0
+            add_card(slide5, 4.8, 1.3, 3.5, 1.2)
+            add_text_box(slide5, 5.0, 1.4, 3, 0.4, "Avg Interest Rate", font_size=14, color=LIGHT_GRAY)
+            add_text_box(slide5, 5.0, 1.8, 3, 0.5, f"{weighted_rate:.1f}%", font_size=28, color=ORANGE, bold=True)
+
+            total_min_pay = sum(d["min_payment"] for d in debts)
+            add_card(slide5, 8.8, 1.3, 3.5, 1.2)
+            add_text_box(slide5, 9.0, 1.4, 3, 0.4, "Min Monthly Payment", font_size=14, color=LIGHT_GRAY)
+            add_text_box(slide5, 9.0, 1.8, 3, 0.5, format_currency(total_min_pay), font_size=28, color=WHITE, bold=True)
+
+            for i, d in enumerate(debts[:6]):
+                y = 3.0 + i * 0.7
+                paid_pct = 1 - (d["remaining_amount"] / d["total_amount"]) if d["total_amount"] > 0 else 0
+                add_text_box(slide5, 0.8, y, 3.5, 0.4, d["name"], font_size=16, color=WHITE)
+                add_text_box(slide5, 4.5, y, 2, 0.4, format_currency(d["remaining_amount"]), font_size=16, color=RED)
+                add_text_box(slide5, 7, y, 1.5, 0.4, f"{d['interest_rate']}% APR", font_size=14, color=ORANGE)
+
+                # Progress bar background
+                bar_bg = slide5.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(9), Inches(y + 0.05), Inches(3.3), Inches(0.25))
+                bar_bg.fill.solid()
+                bar_bg.fill.fore_color.rgb = RGBColor(0x33, 0x33, 0x55)
+                bar_bg.line.fill.background()
+
+                if paid_pct > 0:
+                    bar_fill = slide5.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(9), Inches(y + 0.05), Inches(max(0.1, 3.3 * paid_pct)), Inches(0.25))
+                    bar_fill.fill.solid()
+                    bar_fill.fill.fore_color.rgb = GREEN
+                    bar_fill.line.fill.background()
+        else:
+            add_text_box(slide5, 0.8, 2, 10, 1, "No debts tracked — you're in great shape!", font_size=24, color=GREEN, bold=True)
+
+        # ---- SLIDE 6: Goals & Next Steps ----
+        slide6 = prs.slides.add_slide(prs.slide_layouts[6])
+        add_bg(slide6)
+        add_text_box(slide6, 0.8, 0.4, 10, 0.8, "Goals & Next Steps", font_size=36, color=WHITE, bold=True)
+
+        if goals:
+            for i, g in enumerate(goals[:4]):
+                y = 1.4 + i * 1.1
+                pct = min(g["current_amount"] / g["target_amount"], 1.0) if g["target_amount"] > 0 else 0
+                add_card(slide6, 0.8, y, 5.5, 0.9)
+                add_text_box(slide6, 1.0, y + 0.05, 4, 0.35, g["name"], font_size=16, color=WHITE, bold=True)
+                add_text_box(slide6, 1.0, y + 0.4, 4, 0.35,
+                             f"{format_currency(g['current_amount'])} / {format_currency(g['target_amount'])} ({pct*100:.0f}%)",
+                             font_size=13, color=LIGHT_GRAY)
+
+                # Mini progress bar
+                bar_bg = slide6.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(5.2), Inches(y + 0.3), Inches(1.0), Inches(0.2))
+                bar_bg.fill.solid()
+                bar_bg.fill.fore_color.rgb = RGBColor(0x33, 0x33, 0x55)
+                bar_bg.line.fill.background()
+                if pct > 0:
+                    bar_fill = slide6.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(5.2), Inches(y + 0.3), Inches(max(0.05, 1.0 * pct)), Inches(0.2))
+                    bar_fill.fill.solid()
+                    bar_fill.fill.fore_color.rgb = GREEN
+                    bar_fill.line.fill.background()
+
+        # Next steps (right side)
+        add_text_box(slide6, 7, 1.4, 5, 0.6, "Your Top 3 Next Steps", font_size=22, color=PRIMARY, bold=True)
+        for i, (level, text) in enumerate(priorities[:3]):
+            y = 2.2 + i * 1.0
+            num_shape = slide6.shapes.add_shape(MSO_SHAPE.OVAL, Inches(7), Inches(y), Inches(0.5), Inches(0.5))
+            num_shape.fill.solid()
+            num_shape.fill.fore_color.rgb = PRIMARY
+            num_shape.line.fill.background()
+            tf = num_shape.text_frame
+            p = tf.paragraphs[0]
+            p.text = str(i + 1)
+            p.font.size = Pt(18)
+            p.font.color.rgb = WHITE
+            p.font.bold = True
+            p.alignment = PP_ALIGN.CENTER
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+
+            add_text_box(slide6, 7.7, y + 0.05, 5, 0.45, text, font_size=14, color=WHITE)
+
+        # Footer
+        add_text_box(slide6, 0.8, 6.5, 12, 0.5, "Generated by MoneyMind AI  |  Review monthly for best results", font_size=12, color=LIGHT_GRAY, alignment=PP_ALIGN.CENTER)
+
+        return prs
+
+    # Download button
+    if st.button("🚀 Generate PowerPoint", type="primary", use_container_width=True):
+        with st.spinner("Building your executive action plan..."):
+            prs = build_pptx()
+            buffer = io.BytesIO()
+            prs.save(buffer)
+            buffer.seek(0)
+
+            st.session_state.pptx_buffer = buffer.getvalue()
+            st.session_state.pptx_filename = f"MoneyMind_ActionPlan_{month}.pptx"
+            st.success("PowerPoint generated!")
+
+    if "pptx_buffer" in st.session_state:
+        st.download_button(
+            "📥 Download PowerPoint",
+            data=st.session_state.pptx_buffer,
+            file_name=st.session_state.pptx_filename,
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            use_container_width=True,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════
